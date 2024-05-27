@@ -5,6 +5,7 @@ const bodyParser = require("body-parser");
 const flash = require("connect-flash");
 const bcrypt = require("bcrypt");
 const sql = require("mssql");
+const fs = require("fs");
 
 // Require the Passport configuration
 require("./passport-config")(passport);
@@ -69,21 +70,40 @@ app.post("/register", async (req, res) => {
   }
 });
 
+// POST route for adding a product with Base64 image input
 app.post("/addProduct", async (req, res) => {
   const {
     nameProduct,
-    imgProductUrl,
     priceProduct,
     description,
     size,
     materials,
+    imgProductBase64,
   } = req.body;
 
-  if (!req.isAuthenticated()) {
-    return res.status(401).json({ message: "Unauthorized" });
-  }
-
   try {
+    // Validate required fields
+    if (
+      !nameProduct ||
+      !priceProduct ||
+      !description ||
+      !size ||
+      !materials ||
+      !imgProductBase64
+    ) {
+      return res
+        .status(400)
+        .send("All fields and image file (Base64) are required");
+    }
+
+    const imgProductBase64S = imgProductBase64.replace(/^data:image\/\w+;base64,/, "");
+
+    // Decode Base64 image data
+    const imgBuffer = Buffer.from(imgProductBase64S, "base64");
+    // Save decoded image to a file (optional, depending on your database schema)
+    const imgProductUrl = `/uploads/${Date.now()}_image.jpg`; // Adjust file extension as per your needs
+    fs.writeFileSync(`./public${imgProductUrl}`, imgBuffer);
+
     // Start a transaction
     const transaction = new sql.Transaction();
     await transaction.begin();
@@ -95,7 +115,7 @@ app.post("/addProduct", async (req, res) => {
       .input("ImageURL", sql.NVarChar, imgProductUrl)
       .input("Price", sql.Decimal(10, 2), priceProduct)
       .query(
-        "INSERT INTO Products (Name, ImageURL, Price) OUTPUT INSERTED.ProductID VALUES (@Name, @ImageURL, @Price)"
+        "INSERT INTO Products (Name, Price, ImageURL) OUTPUT INSERTED.ProductID VALUES (@Name, @Price, @ImageURL)"
       );
 
     const productId = productResult.recordset[0].ProductID;
@@ -166,6 +186,37 @@ app.get("/getAllProducts", async (req, res) => {
   } catch (err) {
     console.error("Error getting products:", err);
     res.redirect("/dashboard");
+  }
+});
+
+app.get("/getProduct/:id", async (req, res) => {
+  // if (!req.isAuthenticated()) {
+  //   return res.status(401).json({ message: "Unauthorized" });
+  // }
+
+  const { id } = req.params;
+  try {
+    const productRequest = new sql.Request();
+    const productResult = await productRequest
+      .input("ProductID", sql.Int, id)
+      .query(
+        "SELECT * FROM Products WHERE ProductID = @ProductID; SELECT * FROM ProductDetails WHERE ProductID = @ProductID; SELECT Materials.Material FROM Materials INNER JOIN ProductMaterials ON Materials.MaterialID = ProductMaterials.MaterialID WHERE ProductMaterials.ProductID = @ProductID"
+      );
+
+    if (productResult.recordsets[0].length === 0) {
+      return res.status(404).send("Product not found");
+    }
+
+    const product = productResult.recordsets[0][0];
+    const details = productResult.recordsets[1][0];
+    const materials = productResult.recordsets[2].map(
+      (material) => material.Material
+    );
+
+    res.send({ product, details, materials });
+  } catch (err) {
+    console.error("Error getting product:", err);
+    res.status(500).send("Error getting product");
   }
 });
 
